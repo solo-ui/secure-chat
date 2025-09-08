@@ -1,1 +1,259 @@
+<!DOCTYPE html>
+<html lang="el">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>3-Person Secure Chat</title>
+  <style>
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f5f5f5;color:#111}
+    .wrap{max-width:480px;margin:0 auto;padding:16px}
+    .card{background:#fff;border:1px solid #eee;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.06);overflow:hidden}
+    header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid #eee}
+    header .dot{width:10px;height:10px;background:#22c55e;border-radius:50%}
+    .grid{display:grid;gap:12px;padding:16px}
+    label{font-size:13px;color:#666}
+    input[type="text"],input[type="number"],input[type="password"]{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:12px}
+    button{cursor:pointer}
+    .btn{padding:10px 12px;border:1px solid #ddd;border-radius:12px;background:#fff}
+    .btn.primary{border:none;background:#111;color:#fff}
+    .msgs{height:52vh;overflow:auto;background:#fafafa;border:1px solid #eee;border-radius:12px;padding:12px}
+    .bubble{display:inline-block;max-width:85%;border-radius:16px;padding:8px 12px;white-space:pre-wrap;word-break:break-word}
+    .bubble.locked{background:#f0f0f0;color:#666}
+    .bubble.open{background:#e5e7eb}
+    .meta{font-size:10px;color:#888;margin:0 0 4px 0}
+    .row{display:flex;gap:8px}
+    .row > *{flex:1}
+    .row .btn{flex:0 0 auto}
+    .opts{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <header>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div class="dot"></div>
+        <strong>3-Person Secure Chat</strong>
+      </div>
+      <button id="btnNuke" class="btn" title="Διαγραφή όλων">Nuke</button>
+    </header>
 
+    <div class="grid">
+      <div>
+        <label>Το όνομά σου</label>
+        <input id="name" type="text" placeholder="π.χ. Bill" />
+      </div>
+      <div>
+        <label>Room ID (όλοι το ίδιο)</label>
+        <input id="room" type="text" placeholder="π.χ. team123" />
+      </div>
+      <div>
+        <label>Passphrase (μυστικό δωματίου)</label>
+        <div class="row">
+          <input id="pass" type="password" placeholder="μοιράσου το μόνο με τους 3" />
+          <button id="btnRotate" class="btn">Rotate</button>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-top:6px">
+          <input id="remember" type="checkbox" /> Αποθήκευση passphrase μέχρι να κλείσει ο browser
+        </label>
+      </div>
+    </div>
+
+    <div class="grid" style="padding-top:0">
+      <div id="msgs" class="msgs"></div>
+    </div>
+
+    <div class="grid" style="border-top:1px solid #eee">
+      <div class="row">
+        <input id="text" type="text" placeholder="Γράψε μήνυμα…" />
+        <button id="btnSend" class="btn primary">Send</button>
+      </div>
+      <div class="opts">
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#555">
+          <input id="burn" type="checkbox" /> Burn after read
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#555">
+          Auto-expire (λεπτά):
+          <input id="expire" type="number" min="0" value="0" style="width:90px" />
+        </label>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Firebase ESM (modular) -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, deleteDoc, doc, getDocs, limit } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+  import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+
+  // 1) ΒΑΛΕ ΤΟ ΔΙΚΟ ΣΟΥ CONFIG ΕΔΩ:
+  const FIREBASE_CONFIG = {
+    apiKey: "YOUR_API_KEY",
+    authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+    projectId: "YOUR_PROJECT_ID",
+    storageBucket: "YOUR_PROJECT_ID.appspot.com",
+    messagingSenderId: "",
+    appId: "",
+  };
+
+  // --- Init
+  const app = initializeApp(FIREBASE_CONFIG);
+  const db = getFirestore(app);
+  const auth = getAuth(app);
+  await signInAnonymously(auth).catch(console.error);
+
+  // --- UI refs
+  const $ = (id)=>document.getElementById(id);
+  const nameEl = $("name"), roomEl=$("room"), passEl=$("pass"), rememberEl=$("remember");
+  const msgsEl=$("msgs"), textEl=$("text"), sendBtn=$("btnSend"), burnEl=$("burn"), expEl=$("expire");
+  const rotateBtn=$("btnRotate"), nukeBtn=$("btnNuke");
+
+  // Restore basics
+  nameEl.value = localStorage.getItem("displayName") || "";
+  roomEl.value = localStorage.getItem("roomId") || "our-room";
+  const savedPass = sessionStorage.getItem("chat.passphrase");
+  if (savedPass){ passEl.value = savedPass; rememberEl.checked = true; }
+
+  // Crypto helpers
+  const enc = new TextEncoder(), dec = new TextDecoder();
+  function b64(buf){ return btoa(String.fromCharCode(...new Uint8Array(buf))); }
+  function unb64(str){ const bin=atob(str); const a=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) a[i]=bin.charCodeAt(i); return a.buffer; }
+  async function deriveKey(pass, salt){
+    const km = await crypto.subtle.importKey("raw", enc.encode(pass), "PBKDF2", false, ["deriveKey"]);
+    return crypto.subtle.deriveKey({name:"PBKDF2", salt: enc.encode(salt), iterations:200000, hash:"SHA-256"}, km, {name:"AES-GCM", length:256}, false, ["encrypt","decrypt"]);
+  }
+  async function encryptJson(key, obj){
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const data = enc.encode(JSON.stringify(obj));
+    const cipher = await crypto.subtle.encrypt({name:"AES-GCM", iv}, key, data);
+    return { c:b64(cipher), iv:b64(iv) };
+  }
+  async function decryptJson(key, payload){
+    const {c,iv} = payload;
+    const plain = await crypto.subtle.decrypt({name:"AES-GCM", iv:new Uint8Array(unb64(iv))}, key, unb64(c));
+    return JSON.parse(dec.decode(plain));
+  }
+
+  // Subscribe per room
+  let unsub = null;
+  function subscribeRoom(){
+    if (unsub) unsub();
+    const roomId = roomEl.value.trim();
+    if (!roomId) return;
+
+    localStorage.setItem("roomId", roomId);
+
+    const qy = query(collection(db, "rooms", roomId, "messages"), orderBy("createdAt", "asc"));
+    unsub = onSnapshot(qy, async (snap)=>{
+      const now = Date.now();
+      const raws = [];
+      for (const d of snap.docs){
+        const data = d.data();
+        if (data.expiresAt && data.expiresAt.toMillis && data.expiresAt.toMillis() < now){
+          try{ await deleteDoc(doc(db, "rooms", roomId, "messages", d.id)); }catch{}
+          continue;
+        }
+        raws.push({ id:d.id, ...data });
+      }
+      render(raws);
+    });
+  }
+
+  async function render(raws){
+    msgsEl.innerHTML = "";
+    const roomId = roomEl.value.trim();
+    const pass = passEl.value.trim();
+
+    let key = null;
+    if (pass) key = await deriveKey(pass, roomId);
+
+    for (const r of raws){
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+
+      if (r.c && r.iv && key){
+        try{
+          const obj = await decryptJson(key, {c:r.c, iv:r.iv});
+          meta.textContent = obj.name || "?";
+          bubble.textContent = obj.text;
+          bubble.classList.add("open");
+          if (r.burnAfterRead){
+            try{ await deleteDoc(doc(db, "rooms", roomId, "messages", r.id)); }catch{}
+          }
+        }catch{
+          meta.textContent = "🔒 locked";
+          bubble.textContent = "(Λάθος passphrase ή δεν έχει οριστεί)";
+          bubble.classList.add("locked");
+        }
+      }else{
+        meta.textContent = "🔒 locked";
+        bubble.textContent = "(Κρυπτογραφημένο)";
+        bubble.classList.add("locked");
+      }
+
+      const wrap = document.createElement("div");
+      wrap.style.marginBottom = "10px";
+      wrap.appendChild(meta);
+      wrap.appendChild(bubble);
+      msgsEl.appendChild(wrap);
+    }
+    msgsEl.scrollTop = msgsEl.scrollHeight;
+  }
+
+  // Events
+  roomEl.addEventListener("change", subscribeRoom);
+  passEl.addEventListener("input", ()=>{ if (rememberEl.checked) sessionStorage.setItem("chat.passphrase", passEl.value); subscribeRoom(); });
+  rememberEl.addEventListener("change", ()=>{ if (rememberEl.checked) sessionStorage.setItem("chat.passphrase", passEl.value); else sessionStorage.removeItem("chat.passphrase"); });
+  nameEl.addEventListener("change", ()=> localStorage.setItem("displayName", nameEl.value.trim()));
+
+  sendBtn.addEventListener("click", async ()=>{
+    const name = nameEl.value.trim();
+    const roomId = roomEl.value.trim();
+    const pass = passEl.value.trim();
+    const text = textEl.value.trim();
+    if (!text){ return; }
+    if (!name){ alert("Γράψε όνομα"); return; }
+    if (!pass){ alert("Βάλε passphrase"); return; }
+
+    localStorage.setItem("displayName", name);
+    const key = await deriveKey(pass, roomId);
+    const payload = await encryptJson(key, { text, name, ts: Date.now() });
+    const expiresAt = (parseInt(expEl.value||"0",10) > 0) ? new Date(Date.now() + parseInt(expEl.value,10)*60_000) : null;
+
+    await addDoc(collection(db, "rooms", roomId, "messages"), {
+      ...payload,
+      createdAt: serverTimestamp(),
+      burnAfterRead: !!burnEl.checked,
+      expiresAt
+    });
+    textEl.value = "";
+  });
+
+  rotateBtn.addEventListener("click", ()=>{
+    const rnd = crypto.getRandomValues(new Uint8Array(24));
+    const p = btoa(String.fromCharCode(...rnd)).replace(/[^A-Za-z0-9]/g, "").slice(0,32);
+    passEl.value = p;
+    if (rememberEl.checked) sessionStorage.setItem("chat.passphrase", p);
+    alert("Νέο passphrase δημιουργήθηκε.\nΜοιράσου το με ασφαλή τρόπο. Τα παλιά μηνύματα χωρίς το παλιό κλειδί δεν διαβάζονται (crypto-shred).");
+    subscribeRoom();
+  });
+
+  nukeBtn.addEventListener("click", async ()=>{
+    if (!confirm("Διαγραφή ΟΛΩΝ των μηνυμάτων;")) return;
+    const roomId = roomEl.value.trim();
+    while (true){
+      const snap = await getDocs(query(collection(db, "rooms", roomId, "messages"), limit(50)));
+      if (snap.empty) break;
+      await Promise.all(snap.docs.map(d => deleteDoc(doc(db, "rooms", roomId, "messages", d.id))));
+    }
+    alert("Το δωμάτιο καθαρίστηκε.");
+  });
+
+  // Start
+  subscribeRoom();
+</script>
+</body>
+</html>
