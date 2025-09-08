@@ -1,0 +1,16 @@
+{
+  "name": "3-Person Secure Chat",
+  "short_name": "Secure Chat",
+  "start_url": "/secure-chat/",
+  "scope": "/secure-chat/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#111111",
+  "icons": [
+    { "src": "/secure-chat/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/secure-chat/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/secure-chat/icons/maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/secure-chat/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
